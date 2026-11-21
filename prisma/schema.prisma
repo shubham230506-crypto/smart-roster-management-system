@@ -1,0 +1,154 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 1. Operational Pods (Teams)
+model Pod {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  leadId    String?    @unique
+  lead      Employee?  @relation("PodLeadership", fields: [leadId], references: [id])
+  employees Employee[] @relation("PodMembers")
+  brands    Brand[]
+}
+
+// 2. Employees (Agents & Pod Leads)
+model Employee {
+  id                 String               @id @default(cuid())
+  employeeCode       String               @unique
+  name               String
+  email              String               @unique
+  role               String               @default("AGENT") // "POD_LEAD" or "AGENT"
+  podId              String
+  pod                Pod                  @relation("PodMembers", fields: [podId], references: [id])
+  ledPod             Pod?                 @relation("PodLeadership")
+  preferredWeeklyOff Int                  @default(0) // 0=Sunday, 1=Monday ... 6=Saturday
+  isActive           Boolean              @default(true)
+
+  allocations        ResourceAllocation[]
+  leaves             EmployeeLeave[]
+  rosterEntries      RosterEntry[]
+}
+
+// 3. D2C Client Brands
+model Brand {
+  id             String               @id @default(cuid())
+  name           String               @unique
+  podId          String
+  pod            Pod                  @relation(fields: [podId], references: [id])
+  isActive       Boolean              @default(true)
+
+  brandProcesses BrandProcess[]
+  allocations    ResourceAllocation[]
+  rosterEntries  RosterEntry[]
+}
+
+// 4. Support Processes (CS, ACC, NDR, Retention)
+model Process {
+  id             String               @id @default(cuid())
+  name           String               @unique
+  code           String               @unique
+
+  brandProcesses BrandProcess[]
+  allocations    ResourceAllocation[]
+  rosterEntries  RosterEntry[]
+}
+
+// 5. Client-Specific Working Rules per Brand & Process
+model BrandProcess {
+  id            String  @id @default(cuid())
+  brandId       String
+  brand         Brand   @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  processId     String
+  process       Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+  operatingRule String  @default("ALL_DAYS_EXCEPT_HOLIDAYS") // "ALL_365_DAYS", "ALL_DAYS_EXCEPT_HOLIDAYS", "NO_SUNDAYS_NO_HOLIDAYS"
+  minDailyStaff Int     @default(1)
+
+  @@unique([brandId, processId])
+}
+
+// 6. Who works on which Brand & Process
+model ResourceAllocation {
+  id            String   @id @default(cuid())
+  employeeId    String
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  brandId       String
+  brand         Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  processId     String
+  process       Process  @relation(fields: [processId], references: [id], onDelete: Cascade)
+  isPrimary     Boolean  @default(true)
+  allocationPct Int      @default(100)
+
+  @@unique([employeeId, brandId, processId])
+}
+
+// 7. Public Holidays
+model PublicHoliday {
+  id   String   @id @default(cuid())
+  date DateTime @unique
+  name String
+}
+
+// 8. Employee Leaves & Comp-Offs
+model EmployeeLeave {
+  id         String   @id @default(cuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date       DateTime
+  type       String   // "PLANNED_LEAVE" or "COMP_OFF"
+  status     String   @default("APPROVED")
+  reason     String?
+
+  @@unique([employeeId, date])
+}
+
+// 9. Monthly Roster Header
+model MonthlyRoster {
+  id          String           @id @default(cuid())
+  month       Int
+  year        Int
+  status      String           @default("DRAFT")
+  generatedAt DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  entries     RosterEntry[]
+  conflicts   RosterConflict[]
+
+  @@unique([month, year])
+}
+
+// 10. Daily Schedule Cell for each Employee
+model RosterEntry {
+  id           String        @id @default(cuid())
+  rosterId     String
+  roster       MonthlyRoster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  date         DateTime
+  employeeId   String
+  employee     Employee      @relation(fields: [employeeId], references: [id])
+  status       String        // "WORKING", "WEEKLY_OFF", "PUBLIC_HOLIDAY", "PLANNED_LEAVE", "COMP_OFF"
+  brandId      String?
+  brand        Brand?        @relation(fields: [brandId], references: [id])
+  processId    String?
+  process      Process?      @relation(fields: [processId], references: [id])
+  isManualEdit Boolean       @default(false)
+}
+
+// 11. Detected Scheduling Conflicts & Coverage Gaps
+model RosterConflict {
+  id         String        @id @default(cuid())
+  rosterId   String
+  roster     MonthlyRoster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  date       DateTime
+  severity   String        // "CRITICAL" or "WARNING"
+  type       String        // "ZERO_BRAND_COVERAGE", "UNDERSTAFFED_PROCESS", "PREFERENCE_OVERRIDDEN"
+  brandId    String?
+  processId  String?
+  employeeId String?
+  message    String
+  suggestion String?
+}
